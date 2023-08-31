@@ -1,4 +1,7 @@
-use std::{env, net::{IpAddr, Ipv4Addr}, str::FromStr, process};
+use std::{env, net::{IpAddr, Ipv4Addr, TcpStream}, str::FromStr, process};
+use std::sync::mpsc::{channel, Sender};
+use std::thread;
+use std::io::{self, Write};
 
 #[derive(Clone, Debug)] 
 enum Flag {
@@ -9,9 +12,11 @@ enum Flag {
 #[derive(Clone, Debug)] 
 struct CliArgs {
     flag: Flag,
-    thread_count: i32,
+    thread_count: u16,
     ip_addr: IpAddr,
 }
+
+const MAX: u16 = 65535;
 
 //ex
 // port-sniffer.exe -h or port-sniffer.exe -help or port-sniffer -j 10 -h 
@@ -41,7 +46,7 @@ impl CliArgs {
     }
 
     fn args_parse(args: &Vec<String>) -> Result<CliArgs, &'static str> {
-        
+
         for i in args {
             if i == "-h" || i == "--help" {
                 return Ok(CliArgs { flag: Flag::Help, thread_count: 0, ip_addr: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)) });
@@ -49,7 +54,7 @@ impl CliArgs {
         }
 
         if args[1] == "-j" && args.len() == 4 {
-            let thread_count: i32 = match args[2].parse::<i32>() {
+            let thread_count: u16 = match args[2].parse::<u16>() {
                 Ok(s) => s,
                 Err(_) => return Err("failed to parse thread number"),
             };
@@ -65,11 +70,31 @@ impl CliArgs {
         } else if let Ok(ip_addr) = IpAddr::from_str(&args[1]) {
             return Ok(CliArgs {
                 flag: Flag::Worker,
-                ip_addr,
                 thread_count: 4, // default number of threads is 4
+                ip_addr,
             });
         }
         Err("Invalid arguments")
+    }
+
+    fn scan(tx: Sender<u16>, start_port: u16, ip_addr: IpAddr, thread_count: u16) {
+        let mut port: u16 = start_port + 1;
+        loop {
+            match TcpStream::connect((ip_addr, port)) {
+                Ok(_) => {
+                    print!(".");
+                    io::stdout().flush().unwrap();
+                    tx.send(port).unwrap();
+                }
+                Err(_) => {
+                    //println!("{}: closed port", port);
+                }
+            }
+            if (MAX - port) <= thread_count {
+                break;
+            }
+            port += thread_count;
+        }
     }
 
 }
@@ -89,4 +114,28 @@ fn main() {
         );
         process::exit(0);
     }
+
+    let (tx, rx) = channel();
+    let thread_count = cli_args.thread_count;
+    let ip_addr = cli_args.ip_addr;
+    for i in 0..thread_count {
+        let tx = tx.clone();
+
+        thread::spawn(move || {
+            CliArgs::scan(tx, i, ip_addr, thread_count);
+        });
+    }
+
+    let mut out = vec![];
+    drop(tx);
+    for p in rx {
+        out.push(p);
+    }
+
+    println!("");
+    out.sort();
+    for v in out {
+        println!("{} is open", v);
+    }
 }
+// ex to run: cargo run -- -j  1000 192.168.1.1
